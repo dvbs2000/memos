@@ -12,24 +12,26 @@ jobs:
       - name: Checkout memos v0.24.0 from official repository
         uses: actions/checkout@v4
         with:
-          repository: 'usememos/memos' # 指定官方仓库
-          ref: 'v0.24.0'              # 指定版本标签
+          repository: 'usememos/memos'
+          ref: 'refs/tags/v0.24.0'
 
       # 2. 关键步骤：自动修改代码
       - name: Apply patch to add copy content button
         run: |
+          # 在菜单项中插入“复制内容”按钮（使用英文字符）
           sed -i '/<MenuItem onClick={handleCopyLink}>/,/<\/MenuItem>/a \
               {!isArchived && (\
                 <MenuItem onClick={handleCopyContent}>\
                   <CopyIcon className="w-4 h-auto" />\
-                  复制内容\
+                  Copy Content\
                 </MenuItem>\
               )}' web/src/components/MemoActionMenu.tsx
 
+          # 在脚本中插入“复制内容”的功能函数
           sed -i '/const handleCopyLink = () => {/,/};/a \
             const handleCopyContent = () => {\
               copy(memo.content);\
-              toast.success("内容已复制");\
+              toast.success("Content copied!");\
             };' web/src/components/MemoActionMenu.tsx
 
       # 3. 设置 Docker Buildx
