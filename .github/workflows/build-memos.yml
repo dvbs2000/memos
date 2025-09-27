@@ -1,5 +1,6 @@
 name: Custom Memos Builder
 
+# 允许我们手动触发这个工作流
 on:
   workflow_dispatch:
 
@@ -7,23 +8,49 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      # 直接从你的仓库检出默认的 main 分支（我们已经手动修改好了）
-      - name: Checkout repository
+      # 1. 使用最精确的 ref 路径，直接检出 v0.24.0 标签
+      - name: Checkout memos v0.24.0 from official repository
         uses: actions/checkout@v4
+        with:
+          repository: 'usememos/memos'
+          ref: 'refs/tags/v0.24.0'
 
+      # 2. 关键步骤：自动修改代码 (使用已知对v0.24.0有效的补丁)
+      - name: Apply patch to add copy content button
+        run: |
+          # 在菜单项中插入“复制内容”按钮
+          sed -i '/<MenuItem onClick={handleCopyLink}>/,/<\/MenuItem>/a \
+              {!isArchived && (\
+                <MenuItem onClick={handleCopyContent}>\
+                  <CopyIcon className="w-4 h-auto" />\
+                  Copy Content\
+                </MenuItem>\
+              )}' web/src/components/MemoActionMenu.tsx
+
+          # 在脚本中插入“复制内容”的功能函数
+          sed -i '/const handleCopyLink = () => {/,/};/a \
+            const handleCopyContent = () => {\
+              copy(memo.content);\
+              toast.success("Content copied!");\
+            };' web/src/components/MemoActionMenu.tsx
+
+      # 3. 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 4. 登录到 Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 5. 构建并推送到 Docker Hub
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./scripts/Dockerfile # <-- 这是根据你的发现修正的正确路径！
+          # 我们需要使用 v0.24.0 对应的 Dockerfile
+          file: ./Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/memos:custom-copy-button
