@@ -11,6 +11,8 @@ jobs:
       # 1. 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # <-- 这是新增的关键配置，0 表示下载所有历史和标签
 
       # 2. 切换到我们需要的 v0.24.0 版本
       - name: Checkout specific version
