@@ -7,7 +7,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      # 直接从你的仓库检出默认的 main 分支（我们已经修改好了）
+      # 直接从你的仓库检出默认的 main 分支（我们已经手动修改好了）
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -24,6 +24,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./scripts/Dockerfile # <-- 这是根据你的发现修正的正确路径！
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/memos:custom-copy-button
