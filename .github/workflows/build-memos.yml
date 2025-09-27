@@ -1,6 +1,5 @@
 name: Custom Memos Builder
 
-# 允许我们手动触发这个工作流
 on:
   workflow_dispatch:
 
@@ -8,31 +7,244 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
-      # 1. 使用最精确的 ref 路径，直接检出 v0.24.0 标签
+      # 1. 检出 v0.24.0 官方源码
       - name: Checkout memos v0.24.0 from official repository
         uses: actions/checkout@v4
         with:
           repository: 'usememos/memos'
           ref: 'refs/tags/v0.24.0'
 
-      # 2. 关键步骤：自动修改代码 (使用已知对v0.24.0有效的补丁)
-      - name: Apply patch to add copy content button
+      # 2. 直接用我们修改好的完整文件内容覆盖原始文件
+      - name: Overwrite MemoActionMenu.tsx with patched version
         run: |
-          # 在菜单项中插入“复制内容”按钮
-          sed -i '/<MenuItem onClick={handleCopyLink}>/,/<\/MenuItem>/a \
-              {!isArchived && (\
-                <MenuItem onClick={handleCopyContent}>\
-                  <CopyIcon className="w-4 h-auto" />\
-                  Copy Content\
-                </MenuItem>\
-              )}' web/src/components/MemoActionMenu.tsx
+          cat <<'EOF' > web/src/components/MemoActionMenu.tsx
+          import { Dropdown, Menu, MenuButton, MenuItem } from "@mui/joy";
+          import copy from "copy-to-clipboard";
+          import {
+            ArchiveIcon,
+            ArchiveRestoreIcon,
+            BookmarkMinusIcon,
+            BookmarkPlusIcon,
+            CopyIcon,
+            Edit3Icon,
+            MoreVerticalIcon,
+            TrashIcon,
+            SquareCheckIcon,
+          } from "lucide-react";
+          import toast from "react-hot-toast";
+          import { useLocation } from "react-router-dom";
+          import { markdownServiceClient } from "@/grpcweb";
+          import useNavigateTo from "@/hooks/useNavigateTo";
+          import { useMemoStore, useUserStatsStore } from "@/store/v1";
+          import { State } from "@/types/proto/api/v1/common";
+          import { NodeType } from "@/types/proto/api/v1/markdown_service";
+          import { Memo } from "@/types/proto/api/v1/memo_service";
+          import { cn } from "@/utils";
+          import { useTranslate } from "@/utils/i18n";
+          import { memoLink } from "@/utils/memo";
 
-          # 在脚本中插入“复制内容”的功能函数
-          sed -i '/const handleCopyLink = () => {/,/};/a \
-            const handleCopyContent = () => {\
-              copy(memo.content);\
-              toast.success("Content copied!");\
-            };' web/src/components/MemoActionMenu.tsx
+          interface Props {
+            memo: Memo;
+            readonly?: boolean;
+            className?: string;
+            onEdit?: () => void;
+          }
+
+          const checkHasCompletedTaskList = (memo: Memo) => {
+            for (const node of memo.nodes) {
+              if (node.type === NodeType.LIST && node.listNode?.children && node.listNode?.children?.length > 0) {
+                for (let j = 0; j < node.listNode.children.length; j++) {
+                  if (node.listNode.children[j].type === NodeType.TASK_LIST_ITEM && node.listNode.children[j].taskListItemNode?.complete) {
+                    return true;
+                  }
+                }
+              }
+            }
+            return false;
+          };
+
+          const MemoActionMenu = (props: Props) => {
+            const { memo, readonly } = props;
+            const t = useTranslate();
+            const location = useLocation();
+            const navigateTo = useNavigateTo();
+            const memoStore = useMemoStore();
+            const userStatsStore = useUserStatsStore();
+            const isArchived = memo.state === State.ARCHIVED;
+            const hasCompletedTaskList = checkHasCompletedTaskList(memo);
+            const isInMemoDetailPage = location.pathname.startsWith(memoLink(memo.name));
+
+            const memoUpdatedCallback = () => {
+              // Refresh user stats.
+              userStatsStore.setStateId();
+            };
+
+            const handleTogglePinMemoBtnClick = async () => {
+              try {
+                if (memo.pinned) {
+                  await memoStore.updateMemo(
+                    {
+                      name: memo.name,
+                      pinned: false,
+                    },
+                    ["pinned"],
+                  );
+                } else {
+                  await memoStore.updateMemo(
+                    {
+                      name: memo.name,
+                      pinned: true,
+                    },
+                    ["pinned"],
+                  );
+                }
+              } catch (error) {
+                // do nth
+              }
+            };
+
+            const handleEditMemoClick = () => {
+              if (props.onEdit) {
+                props.onEdit();
+                return;
+              }
+            };
+
+            const handleToggleMemoStatusClick = async () => {
+              const state = memo.state === State.ARCHIVED ? State.NORMAL : State.ARCHIVED;
+              const message = memo.state === State.ARCHIVED ? t("message.restored-successfully") : t("message.archived-successfully");
+              try {
+                await memoStore.updateMemo(
+                  {
+                    name: memo.name,
+                    state,
+                  },
+                  ["state"],
+                );
+                toast(message);
+              } catch (error: any) {
+                toast.error(error.details);
+                console.error(error);
+                return;
+              }
+
+              if (isInMemoDetailPage) {
+                memo.state === State.ARCHIVED ? navigateTo("/") : navigateTo("/archived");
+              }
+              memoUpdatedCallback();
+            };
+
+            const handleCopyLink = () => {
+              copy(`${window.location.origin}${memoLink(memo.name)}`);
+              toast.success(t("message.succeed-copy-link"));
+            };
+            
+            const handleCopyContent = () => {
+              copy(memo.content);
+              toast.success("Content copied!");
+            };
+
+            const handleDeleteMemoClick = async () => {
+              const confirmed = window.confirm(t("memo.delete-confirm"));
+              if (confirmed) {
+                await memoStore.deleteMemo(memo.name);
+                toast.success(t("message.deleted-successfully"));
+                if (isInMemoDetailPage) {
+                  navigateTo("/");
+                }
+                memoUpdatedCallback();
+              }
+            };
+
+            const handleRemoveCompletedTaskListItemsClick = async () => {
+              const confirmed = window.confirm(t("memo.remove-completed-task-list-items-confirm"));
+              if (confirmed) {
+                const newNodes = JSON.parse(JSON.stringify(memo.nodes));
+                for (const node of newNodes) {
+                  if (node.type === NodeType.LIST && node.listNode?.children?.length > 0) {
+                    const children = node.listNode.children;
+                    for (let i = 0; i < children.length; i++) {
+                      if (children[i].type === NodeType.TASK_LIST_ITEM && children[i].taskListItemNode?.complete) {
+                        // Remove completed taskList item and next line breaks
+                        children.splice(i, 1);
+                        if (children[i]?.type === NodeType.LINE_BREAK) {
+                          children.splice(i, 1);
+                        }
+                        i--;
+                      }
+                    }
+                  }
+                }
+                const { markdown } = await markdownServiceClient.restoreMarkdownNodes({ nodes: newNodes });
+                await memoStore.updateMemo(
+                  {
+                    name: memo.name,
+                    content: markdown,
+                  },
+                  ["content"],
+                );
+                toast.success(t("message.remove-completed-task-list-items-successfully"));
+                memoUpdatedCallback();
+              }
+            };
+
+            return (
+              <Dropdown>
+                <MenuButton slots={{ root: "div" }}>
+                  <span className={cn("flex justify-center items-center rounded-full hover:opacity-70", props.className)}>
+                    <MoreVerticalIcon className="w-4 h-4 mx-auto text-gray-500 dark:text-gray-400" />
+                  </span>
+                </MenuButton>
+                <Menu className="text-sm" size="sm" placement="bottom-end">
+                  {!readonly && !isArchived && (
+                    <>
+                      <MenuItem onClick={handleTogglePinMemoBtnClick}>
+                        {memo.pinned ? <BookmarkMinusIcon className="w-4 h-auto" /> : <BookmarkPlusIcon className="w-4 h-auto" />}
+                        {memo.pinned ? t("common.unpin") : t("common.pin")}
+                      </MenuItem>
+                      <MenuItem onClick={handleEditMemoClick}>
+                        <Edit3Icon className="w-4 h-auto" />
+                        {t("common.edit")}
+                      </MenuItem>
+                    </>
+                  )}
+                  {!isArchived && (
+                    <MenuItem onClick={handleCopyLink}>
+                      <CopyIcon className="w-4 h-auto" />
+                      {t("memo.copy-link")}
+                    </MenuItem>
+                  )}
+                  {!isArchived && (
+                    <MenuItem onClick={handleCopyContent}>
+                      <CopyIcon className="w-4 h-auto" />
+                      Copy Content
+                    </MenuItem>
+                  )}
+                  {!readonly && (
+                    <>
+                      {!isArchived && hasCompletedTaskList && (
+                        <MenuItem color="warning" onClick={handleRemoveCompletedTaskListItemsClick}>
+                          <SquareCheckIcon className="w-4 h-auto" />
+                          {t("memo.remove-completed-task-list-items")}
+                        </MenuItem>
+                      )}
+                      <MenuItem color="warning" onClick={handleToggleMemoStatusClick}>
+                        {isArchived ? <ArchiveRestoreIcon className="w-4 h-auto" /> : <ArchiveIcon className="w-4 h-auto" />}
+                        {isArchived ? t("common.restore") : t("common.archive")}
+                      </MenuItem>
+                      <MenuItem color="danger" onClick={handleDeleteMemoClick}>
+                        <TrashIcon className="w-4 h-auto" />
+                        {t("common.delete")}
+                      </MenuItem>
+                    </>
+                  )}
+                </Menu>
+              </Dropdown>
+            );
+          };
+
+          export default MemoActionMenu;
+          EOF
 
       # 3. 设置 Docker Buildx
       - name: Set up Docker Buildx
@@ -50,7 +262,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          # 我们需要使用 v0.24.0 对应的 Dockerfile
           file: ./Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/memos:custom-copy-button
